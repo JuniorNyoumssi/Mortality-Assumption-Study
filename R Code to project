@@ -1,0 +1,1154 @@
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(splines)
+library(readr)
+
+
+
+experience <- read_csv(
+  "life_insurance_assumption_setting_database.csv"
+)
+
+
+# Inspect the structure
+glimpse(experience)
+
+# Review the first records
+head(experience)
+
+# Check missing values
+experience %>%
+  summarise(
+    across(
+      everything(),
+      ~ sum(is.na(.))
+    )
+  )
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(splines)
+
+
+### Data validation step
+
+experience %>%
+  summarise(
+    Rows = n(),
+    Death_Missing = sum(is.na(Death)),
+    Death_Total = sum(Death, na.rm = TRUE),
+    Death_Min = min(Death, na.rm = TRUE),
+    Death_Max = max(Death, na.rm = TRUE),
+    Exposure_NonPositive = sum(Exposure <= 0, na.rm = TRUE),
+    Exposure_Missing = sum(is.na(Exposure))
+  )
+
+
+mortality_data <- experience %>%
+  filter(
+    !is.na(Death),
+    !is.na(Exposure),
+    Exposure > 0,
+    !is.na(Age),
+    Age> 0 , 
+    !is.na(Sex),
+    !is.na(Smoking),
+    !is.na(UW_Class),
+    !is.na(Duration),
+    !is.na(ProductType)
+  ) %>%
+  mutate(
+    Sex = as.factor(Sex),
+    Smoking = as.factor(Smoking),
+    UW_Class = as.factor(UW_Class),
+    ProductType = as.factor(ProductType)
+  )
+
+mortality_glm_core <- glm(
+  Death ~
+    ns(Age, df = 4) +
+    Sex +
+    Smoking +
+    UW_Class +
+    ns(Duration, df = 3) +
+    ProductType,
+  offset = log(Exposure),
+  family = poisson(),
+  data = mortality_data
+)
+
+summary(mortality_glm_core)
+
+
+### Filtering out missing predictor values can reduce the dataset, so let's 
+### verify the effective sample size.
+
+nrow(mortality_data)
+
+mortality_data %>%
+  summarise(
+    Records = n(),
+    Deaths = sum(Death),
+    Exposure = sum(Exposure)
+  )
+
+
+
+
+### Lets investigate the other variables
+
+mortality_extended_data <- mortality_data %>%
+  filter(
+    !is.na(OccupationClass),
+    !is.na(Region),
+    !is.na(Diabetes),
+    !is.na(BMI),
+    !is.na(SystolicBP),
+    !is.na(Cholesterol),
+    !is.na(FamilyHistory),
+    !is.na(Alcohol)
+  ) %>%
+  mutate(
+    OccupationClass = as.factor(OccupationClass),
+    Region = as.factor(Region),
+    Diabetes = as.factor(Diabetes),
+    FamilyHistory = as.factor(FamilyHistory),
+    Alcohol = as.factor(Alcohol)
+  )
+
+
+mortality_glm_core_compare <- glm(
+  Death ~
+    ns(Age, df = 4) +
+    Sex +
+    Smoking +
+    UW_Class +
+    ns(Duration, df = 3) +
+    ProductType,
+  offset = log(Exposure),
+  family = poisson(),
+  data = mortality_extended_data
+)
+
+
+
+
+mortality_glm_extended <- glm(
+  Death ~
+    ns(Age, df = 4) +
+    Sex +
+    Smoking +
+    UW_Class +
+    ns(Duration, df = 3) +
+    ProductType +
+    OccupationClass +
+    Region +
+    Diabetes +
+    BMI +
+    SystolicBP +
+    Cholesterol +
+    FamilyHistory +
+    Alcohol,
+  offset = log(Exposure),
+  family = poisson(),
+  data = mortality_extended_data
+)
+
+AIC(mortality_glm_core_compare, mortality_glm_extended)
+
+
+
+
+
+### model has 1,587 observed deaths across 100,000 records. Before relying on 
+### the Poisson model, we should check both its aggregate calibration and its dispersion 
+### using the fitted values.
+
+
+mortality_data %>%
+  mutate(
+    ExpectedDeaths = predict(
+      mortality_glm_core,
+      newdata = mortality_data,
+      type = "response"
+    )
+  ) %>%
+  summarise(
+    ActualDeaths = sum(Death),
+    ExpectedDeaths = sum(ExpectedDeaths),
+    AE_Ratio = ActualDeaths / ExpectedDeaths,
+    PearsonDispersion = sum(
+      (Death - ExpectedDeaths)^2 / ExpectedDeaths
+    ) / df.residual(mortality_glm_core)
+  )
+
+summary(mortality_extended_data$Age)
+
+### Our next step: validate the extended model by age
+
+mortality_validation <- mortality_extended_data %>%
+  mutate(
+    ExpectedDeaths = predict(
+      mortality_glm_extended,
+      newdata = mortality_extended_data,
+      type = "response"
+    ),
+    AgeBand = cut(
+      Age,
+      breaks = seq(20, 85, by = 5),
+      right = FALSE
+    )
+  ) %>%
+  group_by(AgeBand) %>%
+  summarise(
+    ActualDeaths = sum(Death),
+    ExpectedDeaths = sum(ExpectedDeaths),
+    Exposure = sum(Exposure),
+    AE_Ratio = ActualDeaths / ExpectedDeaths,
+    ObservedRate = ActualDeaths / Exposure,
+    ExpectedRate = ExpectedDeaths / Exposure,
+    .groups = "drop"
+  )
+
+mortality_validation
+
+
+######################################
+
+company_mortality_by_age <- mortality_extended_data %>%
+  mutate(
+    ExpectedDeaths = predict(
+      mortality_glm_extended,
+      newdata = mortality_extended_data,
+      type = "response"
+    )
+  ) %>%
+  group_by(Age) %>%
+  summarise(
+    ActualDeaths = sum(Death),
+    ExpectedDeaths = sum(ExpectedDeaths),
+    Exposure = sum(Exposure),
+    ObservedRate = ActualDeaths / Exposure,
+    CompanyRate = ExpectedDeaths / Exposure,
+    AE_Ratio = ActualDeaths / ExpectedDeaths,
+    .groups = "drop"
+  )
+
+company_mortality_by_age
+
+
+
+#######################################33
+
+
+mortality_extended_data<-mortality_extended_data%>%
+  mutate(AgeBand = cut(Age,
+                breaks = seq(20, 85, by = 5),
+                right = FALSE))
+
+
+
+calculate_two_way_ae <- function(data, model,
+                                 group_variable_1,
+                                 group_variable_2) {
+  
+  data %>%
+    mutate(
+      ExpectedDeaths = predict(
+        model,
+        newdata = data,
+        type = "response"
+      ),
+      Group1 = as.character(.data[[group_variable_1]]),
+      Group2 = as.character(.data[[group_variable_2]])
+    ) %>%
+    group_by(Group1, Group2) %>%
+    summarise(
+      Policies = n(),
+      ActualDeaths = sum(Death),
+      ExpectedDeaths = sum(ExpectedDeaths),
+      Exposure = sum(Exposure),
+      AE_Ratio = if_else(
+        ExpectedDeaths > 0,
+        ActualDeaths / ExpectedDeaths,
+        NA_real_
+      ),
+      ObservedRate = if_else(
+        Exposure > 0,
+        ActualDeaths / Exposure,
+        NA_real_
+      ),
+      ExpectedRate = if_else(
+        Exposure > 0,
+        ExpectedDeaths / Exposure,
+        NA_real_
+      ),
+      .groups = "drop"
+    )
+}
+
+
+# Age and smoking
+ae_age_smoking <- calculate_two_way_ae(
+  mortality_extended_data,
+  mortality_glm_extended,
+  "AgeBand",
+  "Smoking"
+)
+
+# Sex and smoking
+ae_sex_smoking <- calculate_two_way_ae(
+  mortality_extended_data,
+  mortality_glm_extended,
+  "Sex",
+  "Smoking"
+)
+
+# Underwriting class and smoking
+ae_uw_smoking <- calculate_two_way_ae(
+  mortality_extended_data,
+  mortality_glm_extended,
+  "UW_Class",
+  "Smoking"
+)
+
+# Product and underwriting class
+ae_product_uw <- calculate_two_way_ae(
+  mortality_extended_data,
+  mortality_glm_extended,
+  "ProductType",
+  "UW_Class"
+)
+
+ae_age_smoking
+ae_sex_smoking
+ae_uw_smoking
+ae_product_uw
+
+
+### I will investigate age_smoking and uwclass_smoking because for thesame age group 
+###  category the AE ratio is widely different for same UW Class .
+
+
+
+# Candidate 1: Age curve differs by smoking status
+mortality_glm_age_smoking <- update(
+  mortality_glm_extended,
+  . ~ . + ns(Age, df = 4):Smoking
+)
+
+# Candidate 2: Smoking effect differs by underwriting class
+mortality_glm_uw_smoking <- update(
+  mortality_glm_extended,
+  . ~ . + UW_Class:Smoking
+)
+
+# Candidate 3: Underwriting effect differs by product
+mortality_glm_product_uw <- update(
+  mortality_glm_extended,
+  . ~ . + ProductType:UW_Class
+)
+
+# Compare model fit
+AIC(
+  mortality_glm_extended,
+  mortality_glm_age_smoking,
+  mortality_glm_uw_smoking,
+  mortality_glm_product_uw
+)
+
+
+
+### Lower AIC is preferred when comparing models fitted to the same observations. 
+### But AIC alone will not tell us whether an interaction is stable or actuarially sensible.
+### Next, use likelihood-ratio tests to assess whether each additional interaction materially 
+### improves the fit.
+
+
+anova(
+  mortality_glm_extended,
+  mortality_glm_age_smoking,
+  test = "Chisq"
+)
+
+anova(
+  mortality_glm_extended,
+  mortality_glm_uw_smoking,
+  test = "Chisq"
+)
+
+anova(
+  mortality_glm_extended,
+  mortality_glm_product_uw,
+  test = "Chisq"
+)
+
+
+
+### Based on these ANOVAs we can conclude that the more complex model does not 
+### provide a statistically significant improvement in explaining the observed 
+### data compared to the simpler model.
+
+
+
+
+#### Decile analysis
+
+
+
+calculate_mortality_deciles <- function(data, model) {
+  
+  data %>%
+    mutate(
+      ExpectedDeaths = predict(
+        model,
+        newdata = data,
+        type = "response"
+      ),
+      PredictedRate = ExpectedDeaths / Exposure
+    ) %>%
+    mutate(
+      Decile = ntile(PredictedRate, 10)
+    ) %>%
+    group_by(Decile) %>%
+    summarise(
+      Policies = n(),
+      ActualDeaths = sum(Death),
+      ExpectedDeaths = sum(ExpectedDeaths),
+      Exposure = sum(Exposure),
+      AE_Ratio = ActualDeaths / ExpectedDeaths,
+      ObservedRate = ActualDeaths / Exposure,
+      ExpectedRate = ExpectedDeaths / Exposure,
+      .groups = "drop"
+    ) %>%
+    arrange(Decile)
+}
+
+mortality_deciles <- calculate_mortality_deciles(
+  mortality_extended_data,
+  mortality_glm_extended
+)
+
+mortality_deciles
+
+
+
+### Confidence interval function to decide whether the decile deviations 
+### warrant further investigation or whether we are ready to proceed to credibility.
+
+
+add_ae_confidence_intervals <- function(ae_data, confidence = 0.95) {
+  
+  alpha <- 1 - confidence
+  
+  ae_data %>%
+    mutate(
+      AE_Lower = if_else(
+        ActualDeaths == 0,
+        0,
+        qchisq(
+          alpha / 2,
+          df = 2 * ActualDeaths
+        ) / (2 * ExpectedDeaths)
+      ),
+      AE_Upper = qchisq(
+        1 - alpha / 2,
+        df = 2 * (ActualDeaths + 1)
+      ) / (2 * ExpectedDeaths),
+      AE_Flag = case_when(
+        AE_Lower > 1 ~ "Underprediction",
+        AE_Upper < 1 ~ "Overprediction",
+        TRUE ~ "No clear evidence of miscalibration"
+      )
+    )
+}
+
+mortality_deciles_ci <- add_ae_confidence_intervals(
+  mortality_deciles
+)
+
+
+### Show all the column row values 
+
+mortality_deciles_ci
+print(mortality_deciles_ci, n = Inf, width = Inf)
+
+
+
+
+### THE NEXT MOVE WILL BE TO FIT THE MODEL ON UNSEEN DATA BUT THE ISSUE IS 
+### I DO NOT HAVE UNSEEN DATA FORGOT TO SEPARATE SOME TEST DATA BEFORE PROJECT
+
+
+
+
+
+
+
+### Credibility weighting with q prior as overall portfolio qx
+
+
+library(dplyr)
+
+calculate_mortality_credibility <- function(
+    data,
+    group_variable = "AgeBand",
+    confidence = 0.95,
+    relative_error = 0.05
+) {
+  
+  # Overall portfolio mortality rate: our prior
+  total_exposure <- sum(data$Exposure, na.rm = TRUE)
+  total_deaths <- sum(data$Death, na.rm = TRUE)
+  
+  q_prior <- total_deaths / total_exposure
+  
+  # Exposure required for full credibility
+  z_critical <- qnorm(1 - (1 - confidence) / 2)
+  
+  full_credibility_exposure <-
+    z_critical^2 / (relative_error^2 * q_prior)
+  
+  # Group-level experience and credibility
+  results <- data %>%
+    group_by(Group = .data[[group_variable]]) %>%
+    summarise(
+      Policies = n(),
+      ActualDeaths = sum(Death, na.rm = TRUE),
+      Exposure = sum(Exposure, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      q_experience = ActualDeaths / Exposure,
+      q_prior = q_prior,
+      
+      Z = pmin(
+        1,
+        sqrt(Exposure / full_credibility_exposure)
+      ),
+      
+      q_credible =
+        Z * q_experience + (1 - Z) * q_prior
+    ) %>%
+    arrange(Group)
+  
+  return(results)
+}
+
+
+
+
+mortality_credibility <- calculate_mortality_credibility(
+  data = mortality_extended_data,
+  group_variable = "AgeBand",
+  confidence = 0.95,
+  relative_error = 0.05
+)
+
+print(mortality_credibility, n = Inf)
+
+
+
+### Because the q_prior is constant with age this might not be the most appropriate
+### credibility model, as it eliminates the age effect on mortality making the age mortality
+### trend centered 
+
+
+### Credibility with q prior as GLM qx
+
+
+
+library(dplyr)
+
+calculate_glm_based_credibility <- function(
+    data,
+    model,
+    group_variable = "AgeBand",
+    confidence = 0.95,
+    relative_error = 0.05
+) {
+  
+  # Portfolio-wide mortality rate used only to set
+  # the initial full-credibility exposure threshold
+  q_portfolio <- sum(data$Death, na.rm = TRUE) /
+    sum(data$Exposure, na.rm = TRUE)
+  
+  z_critical <- qnorm(1 - (1 - confidence) / 2)
+  
+  full_credibility_exposure <-
+    z_critical^2 /
+    (relative_error^2 * q_portfolio)
+  
+  # Predict expected deaths at the individual record level
+  data_with_predictions <- data %>%
+    mutate(
+      ExpectedDeaths = predict(
+        model,
+        newdata = data,
+        type = "response"
+      )
+    )
+  
+  # Aggregate observed and expected experience by group
+  results <- data_with_predictions %>%
+    group_by(Group = .data[[group_variable]]) %>%
+    summarise(
+      Policies = n(),
+      ActualDeaths = sum(Death, na.rm = TRUE),
+      ExpectedDeaths = sum(ExpectedDeaths, na.rm = TRUE),
+      Exposure = sum(Exposure, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      q_experience = ActualDeaths / Exposure,
+      q_GLM = ExpectedDeaths / Exposure,
+      
+      # Keep the same credibility rule for this comparison
+      Z = pmin(
+        1,
+        sqrt(Exposure / full_credibility_exposure)
+      ),
+      
+      q_credible =
+        Z * q_experience + (1 - Z) * q_GLM,
+      
+      A_E_Ratio = ActualDeaths / ExpectedDeaths
+    ) %>%
+    arrange(Group)
+  
+  return(results)
+}
+
+
+
+mortality_credibility_glm <- calculate_glm_based_credibility(
+  data = mortality_extended_data,
+  model = mortality_glm_extended,
+  group_variable = "AgeBand",
+  confidence = 0.95,
+  relative_error = 0.05
+)
+
+print(mortality_credibility_glm, n = Inf)
+
+
+
+
+
+### Create a Comparison dataframe to compare the different credibility 
+### mortality rates generated
+
+credibility_comparison <- mortality_credibility %>%
+  select(
+    Group,
+    q_experience,
+    q_prior,
+    Z,
+    q_credible
+  ) %>%
+  rename(
+    q_credible_portfolio = q_credible
+  ) %>%
+  left_join(
+    mortality_credibility_glm %>%
+      select(
+        Group,
+        q_GLM,
+        q_credible
+      ) %>%
+      rename(
+        q_credible_GLM = q_credible
+      ),
+    by = "Group"
+  )
+
+print(credibility_comparison, n = Inf)
+
+
+
+
+
+
+#### Double line graph of Potfolio-weighted vs GLM-weighted Mortality
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+plot_data <- credibility_comparison %>%
+  select(Group, q_credible_portfolio, q_credible_GLM) %>%
+  pivot_longer(
+    cols = c(q_credible_portfolio, q_credible_GLM),
+    names_to = "MortalityType",
+    values_to = "MortalityRate"
+  ) %>%
+  mutate(
+    MortalityType = recode(
+      MortalityType,
+      q_credible_portfolio = "Portfolio-weighted mortality",
+      q_credible_GLM = "Credibility-weighted mortality"
+    )
+  )
+
+ggplot(
+  plot_data,
+  aes(
+    x = Group,
+    y = MortalityRate,
+    color = MortalityType,
+    group = MortalityType
+  )
+) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Portfolio-weighted vs GLM-Weighted Mortality",
+    x = "Age band",
+    y = "Mortality rate",
+    color = "Mortality measure"
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1
+    )
+  )
+
+
+
+
+
+library(dplyr)
+
+
+
+### Age specific credibility weighting using GLM_qx as Prior
+
+calculate_age_specific_credibility <- function(
+    data,
+    model,
+    group_variable = "AgeBand",
+    confidence = 0.95,
+    relative_error = 0.05
+) {
+  
+  z_critical <- qnorm(1 - (1 - confidence) / 2)
+  
+  # Predict expected deaths at the individual record level
+  data_with_predictions <- data %>%
+    mutate(
+      ExpectedDeaths = predict(
+        model,
+        newdata = data,
+        type = "response"
+      )
+    )
+  
+  results <- data_with_predictions %>%
+    group_by(Group = .data[[group_variable]]) %>%
+    summarise(
+      Policies = n(),
+      ActualDeaths = sum(Death, na.rm = TRUE),
+      ExpectedDeaths = sum(ExpectedDeaths, na.rm = TRUE),
+      Exposure = sum(Exposure, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      q_experience = ActualDeaths / Exposure,
+      q_GLM = ExpectedDeaths / Exposure,
+      
+      # Age-specific full-credibility exposure
+      FullCredibilityExposure =
+        z_critical^2 / (relative_error^2 * q_GLM),
+      
+      # Exposure-based credibility
+      Z = pmin(
+        1,
+        sqrt(Exposure / FullCredibilityExposure)
+      ),
+      
+      # Credibility-weighted mortality
+      q_credible =
+        Z * q_experience + (1 - Z) * q_GLM
+    ) %>%
+    arrange(Group)
+  
+  return(results)
+}
+
+
+
+mortality_credibility_age_specific <-
+  calculate_age_specific_credibility(
+    data = mortality_extended_data,
+    model = mortality_glm_extended,
+    group_variable = "AgeBand",
+    confidence = 0.95,
+    relative_error = 0.05
+  )
+
+print(mortality_credibility_age_specific, n = Inf,width = Inf)
+
+mortality_credibility_age_specific %>% select(,c("q_experience","q_GLM","q_credible"))
+
+
+
+### Selecting the mortality assumption basis and applying mortality improvement
+### While proceeding with the ageband specifc credibility adjusted mortality we 
+### calculated above
+
+
+
+range(mortality_extended_data$CalendarYear, na.rm = TRUE)
+
+table(mortality_extended_data$CalendarYear, useNA = "ifany")
+
+
+
+apply_mortality_improvement <- function(
+    mortality_table,
+    base_year,
+    target_year,
+    improvement_rate = 0.01,
+    rate_column = "q_credible"
+) {
+  years <- target_year - base_year
+  
+  if (years < 0) {
+    stop("Target year must be greater than or equal to base year.")
+  }
+  
+  if (improvement_rate < 0 || improvement_rate >= 1) {
+    stop("Improvement rate must be between 0 and 1.")
+  }
+  
+  mortality_table$BaseMortality <-
+    mortality_table[[rate_column]]
+  
+  mortality_table$ProjectedMortality <-
+    mortality_table$BaseMortality *
+    (1 - improvement_rate)^years
+  
+  mortality_table$BaseYear <- base_year
+  mortality_table$TargetYear <- target_year
+  mortality_table$ImprovementRate <- improvement_rate
+  
+  mortality_table
+}
+
+
+mortality_table_2026 <- apply_mortality_improvement(
+  mortality_table = mortality_credibility_age_specific,
+  base_year = 2025,
+  target_year = 2026,
+  improvement_rate = 0.01
+)
+
+
+#########################################
+
+### THE PREVIOUS mortality_table_2026 expected deaths is incorrect because 
+### 2025 is our reference year or basis year but it has not been standardised yet 
+### to reflect that.
+
+
+
+#### BECAUSE THE MORTALITY ASSUMPTION IS CARRIED OUT IN 2025 WE NEED TO STANDARDISE
+### THE EXPECTED MORTALITY RATES 2025 , SO THAT IT REFLECTS THE 2025 MORTALITY LEVEL
+### THEN APPLY CREDIBILITY WEIGHTING TO IT
+
+library(dplyr)
+library(splines)
+
+# Center calendar year at our chosen base year: 2025
+mortality_extended_data <- mortality_extended_data %>%
+  mutate(
+    CalendarYearCentered = CalendarYear - 2025
+  )
+
+# Model without a calendar-year trend
+mortality_glm_no_trend <- glm(
+  Death ~ ns(Age, df = 4) + Sex + Smoking + UW_Class +
+    ns(Duration, df = 3) + ProductType +
+    OccupationClass + Region + Diabetes + BMI +
+    SystolicBP + Cholesterol + FamilyHistory + Alcohol,
+  offset = log(Exposure),
+  family = poisson(),
+  data = mortality_extended_data
+)
+mortality_extended_data[,c("CalendarYear","ExpectedDeaths_ActualYear","ExpectedDeaths_2025")]
+
+
+
+# Model with a linear calendar-year trend
+mortality_glm_calendar <- update(
+  mortality_glm_no_trend,
+  . ~ . + CalendarYearCentered
+)
+
+# Compare the models
+AIC(mortality_glm_no_trend, mortality_glm_calendar)
+
+anova(
+  mortality_glm_no_trend,
+  mortality_glm_calendar,
+  test = "Chisq"
+)
+
+# Examine the estimated calendar-year trend
+summary(mortality_glm_calendar)$coefficients[
+  "CalendarYearCentered", 
+]
+
+## It is not statistically significant
+
+# Annual multiplicative mortality trend
+beta_year <- coef(mortality_glm_calendar)[
+  "CalendarYearCentered"
+]
+
+annual_trend <- exp(beta_year) - 1
+
+annual_trend
+
+
+# Extract the fitted calendar-year coefficient
+beta_year <- coef(mortality_glm_calendar)[
+  "CalendarYearCentered"
+]
+
+### Predict Standardized Expected deaths and Moratlity rates as they would be 
+### If they occured in 2025 then merge them by age bands 
+
+mortality_extended_data <- mortality_extended_data %>%
+  mutate(
+    ExpectedDeaths_ActualYear = predict(
+      mortality_glm_calendar,
+      newdata = mortality_extended_data,
+      type = "response"
+    ),
+    
+    # Standardize expected deaths to the 2025 base year
+    ExpectedDeaths_2025 = ExpectedDeaths_ActualYear *
+      exp(beta_year * (2025 - CalendarYear))
+  )
+
+
+mortality_2025_by_ageband <- mortality_extended_data %>%
+  group_by(AgeBand) %>%
+  summarise(
+    Exposure = sum(Exposure, na.rm = TRUE),
+    
+    ActualDeaths = sum(Death, na.rm = TRUE),
+    
+    ExpectedDeaths_2025 = sum(
+      ExpectedDeaths_2025,
+      na.rm = TRUE
+    ),
+    
+    q_experience = ActualDeaths / Exposure,
+    
+    q_GLM_2025 = ExpectedDeaths_2025 / Exposure,
+    
+    .groups = "drop"
+  ) %>%
+  arrange(AgeBand)
+
+print(mortality_2025_by_ageband)
+
+
+
+#### Apply Credibility Weighting to mortality_2025_by_ageband
+
+mortality_credibility_2025 <- mortality_2025_by_ageband %>%
+  mutate(
+    z_critical = qnorm(0.975),
+    
+    FullCredibilityExposure =
+      z_critical^2 /
+      (0.05^2 * q_GLM_2025),
+    
+    Z = pmin(
+      1,
+      sqrt(Exposure / FullCredibilityExposure)
+    ),
+    
+    q_credible_2025 =
+      Z * q_experience +
+      (1 - Z) * q_GLM_2025
+  )
+
+mortality_credibility_2025 %>%
+  select(
+    AgeBand,
+    Exposure,
+    q_experience,
+    q_GLM_2025,
+    Z,
+    q_credible_2025
+  )
+
+
+### Project the basis to 2026
+
+mortality_credibility_2026 <- mortality_credibility_2025 %>%
+  mutate(
+    q_2026 = q_credible_2025 * 0.99
+  )
+mortality_credibility_2026 %>% select(q_credible_2025,q_2026)
+
+
+
+
+
+
+### SELECT AND ULTIMATE MORTALITY
+
+### we will use Duration 3 as the start of the ultimate mortality
+
+### OUR SELECT AND ULTIMATE TABLE STRUCTURE : we will use Attained age band and Duration
+### as the 2 dimensions 
+
+
+
+library(dplyr)
+
+# Predict mortality at the 2025 reference year for
+# policy durations 1, 2, and 3.
+
+predict_duration_rates <- function(
+    data,
+    model,
+    durations = c(1, 2, 3)
+) {
+  
+  bind_rows(lapply(durations, function(d) {
+    
+    prediction_data <- data %>%
+      mutate(
+        Duration = d,
+        CalendarYearCentered = 0
+      )
+    
+    prediction_data$ExpectedDeaths <- predict(
+      model,
+      newdata = prediction_data,
+      type = "response"
+    )
+    
+    prediction_data %>%
+      group_by(AgeBand) %>%
+      summarise(
+        Exposure = sum(Exposure, na.rm = TRUE),
+        ExpectedDeaths = sum(ExpectedDeaths, na.rm = TRUE),
+        q_duration = ExpectedDeaths / Exposure,
+        .groups = "drop"
+      ) %>%
+      mutate(Duration = d)
+    
+  }))
+}
+
+duration_rates <- predict_duration_rates(
+  data = mortality_extended_data,
+  model = mortality_glm_calendar
+)
+
+filter(duration_rates,Duration==2)
+
+
+
+
+### Calculate the select factors
+### We'll calculate the relative mortality at durations 1 and 2 compared with duration 3.
+
+select_factors <- duration_rates %>%
+  select(AgeBand, Duration, q_duration) %>%
+  tidyr::pivot_wider(
+    names_from = Duration,
+    values_from = q_duration,
+    names_prefix = "Duration_"
+  ) %>%
+  mutate(
+    SelectFactor_1 = Duration_1 / Duration_3,
+    SelectFactor_2 = Duration_2 / Duration_3,
+    UltimateFactor = 1
+  )
+
+print(select_factors)
+
+
+
+
+### Build the candidate select-and-ultimate table
+### We'll combine these factors with our existing credibility-weighted 2026 rates. 
+### This retains our selected mortality level while using the GLM to estimate the relative 
+### duration pattern.
+
+
+select_ultimate_table <- mortality_credibility_2026 %>%
+  select(AgeBand, q_2026) %>%
+  left_join(
+    select_factors %>%
+      select(
+        AgeBand,
+        SelectFactor_1,
+        SelectFactor_2
+      ),
+    by = "AgeBand"
+  ) %>%
+  mutate(
+    q_duration_1 = q_2026 * SelectFactor_1,
+    q_duration_2 = q_2026 * SelectFactor_2,
+    q_duration_3_plus = q_2026
+  )
+
+print(select_ultimate_table)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
